@@ -1,0 +1,24 @@
+# KubeOS: keep containerd's configuration the way a Kubernetes node needs it.
+#
+# WHEN   at every boot, ordered before containerd, and from the package's postinst.
+# WHY    containerd.io ships its /etc/containerd/config.toml as a conffile with CRI disabled and
+#        no `imports` line; an upgrade of containerd.io can therefore put that file back and the
+#        node silently stops being a Kubernetes node. Running here means the file is correct
+#        before containerd reads it, whatever happened to the package in between.
+# SAFE   The script writes nothing when the file is already correct, so this is a no-op on a
+#        healthy node; it never fails a boot (a node without containerd simply does nothing).
+[Unit]
+Description=KubeOS containerd configuration
+Documentation=file:/usr/lib/kubeos/kubeos-containerd-config
+ConditionPathExists=/usr/bin/containerd
+Before=containerd.service
+After=local-fs.target
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/kubeos/kubeos-containerd-config
+
+[Install]
+WantedBy=multi-user.target

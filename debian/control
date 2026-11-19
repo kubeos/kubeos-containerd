@@ -1,0 +1,24 @@
+Source: kubeos-containerd
+Section: admin
+Priority: optional
+Maintainer: KubeOS <mail@kubeos.in>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.7.0
+Rules-Requires-Root: no
+Homepage: https://kubeos.in/
+
+Package: kubeos-containerd
+Architecture: all
+Depends: ${misc:Depends}, containerd.io, kubeos-pause-image
+Description: KubeOS: containerd configuration for a Kubernetes node
+ Generates /etc/containerd/config.toml from `containerd config default` and patches the two
+ values a Kubernetes node needs: the systemd cgroup driver, and the sandbox (pause) image
+ known to the release.
+ .
+ The file is generated rather than shipped because containerd.io's own conffile disables the
+ CRI plugin and carries no `imports` line, so a drop-in cannot fix it; generating also means
+ the settings always match the containerd that is actually installed. The unit runs before
+ containerd at every boot and rewrites the file only when it differs, so an upgrade of
+ containerd.io cannot leave a node that is no longer a Kubernetes node.
+ . 
+ It then reports nothing and does nothing when the node is already correct.

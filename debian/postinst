@@ -1,0 +1,42 @@
+#!/bin/sh
+# Runs after kubeos-containerd is unpacked and configured.
+#
+# WHEN   on install and on every upgrade.
+# WHY    The boot unit writes the file before containerd starts, which is enough for a fresh
+#        install but not for a running node: containerd read its configuration at start-up, so
+#        an upgrade that changes values needs containerd restarted, and leaving it stale means
+#        kubelet pulls a sandbox image the release does not ship - the failure this package
+#        exists to prevent.
+# SAFE   Restarts containerd only when the file actually changed and containerd is running;
+#        kubelet recreates its containers itself, which is the same thing containerd.io's own
+#        package does on upgrade.
+set -eu
+
+log() { echo "kubeos-containerd: $*"; }
+
+# dh_installdeb inserts its systemd snippets here: enable the unit, daemon-reload.
+# It must run before this script's own exits, which is why it sits here and not at the end.
+#DEBHELPER#
+
+[ "${1:-}" = configure ] || exit 0
+
+before=$(sha256sum /etc/containerd/config.toml 2>/dev/null | awk '{print $1}' || true)
+if ! /usr/lib/kubeos/kubeos-containerd-config; then
+    log "WARNING: could not configure containerd; check /usr/lib/kubeos/kubeos-containerd-config"
+    exit 0
+fi
+after=$(sha256sum /etc/containerd/config.toml 2>/dev/null | awk '{print $1}' || true)
+
+if [ "$before" = "$after" ]; then
+    log "containerd configuration already correct"
+    exit 0
+fi
+
+if systemctl is-active --quiet containerd 2>/dev/null; then
+    log "containerd configuration changed; restarting containerd (kubelet recreates its containers)"
+    systemctl restart containerd 2>/dev/null || log "WARNING: 'systemctl restart containerd' failed"
+else
+    log "containerd configuration written; it will be used when containerd next starts"
+fi
+
+exit 0

@@ -1,0 +1,82 @@
+#!/bin/sh
+# KubeOS: write the containerd configuration a Kubernetes node needs.
+#
+# WHEN   from kubeos-containerd-config.service (before containerd starts) and from the
+#        kubeos-containerd postinst, i.e. on install, on upgrade and on every boot.
+# WHY    containerd.io ships /etc/containerd/config.toml as a Debian *conffile* whose content is
+#        the wrong shape for Kubernetes: no `version` field, no `imports` line (so drop-ins are
+#        ignored outright) and `disabled_plugins = ["cri"]`, which disables the CRI plugin the
+#        kubelet talks to. That cannot be fixed with a drop-in, so the file is generated from
+#        `containerd config default` - which always matches the installed containerd - and then
+#        patched in exactly two places. Generating instead of shipping is deliberate: a
+#        hand-written config silently drifts from the package, and containerd then refuses to
+#        start.
+# SAFE   Re-runnable and idempotent: it writes nothing when the file already carries what this
+#        release wants, so a boot does not touch containerd. --force rewrites unconditionally.
+#        Exit 0 means "the file is what KubeOS wants" (whether or not it had to change it).
+set -eu
+
+CONF="${KUBEOS_CONTAINERD_CONF:-/etc/containerd/config.toml}"
+PAUSE_IMAGE_FILE=/usr/share/kubeos/pause/IMAGE
+FORCE=0
+[ "${1:-}" = --force ] && FORCE=1
+
+log() { printf 'kubeos-containerd: %s\n' "$*"; }
+
+command -v containerd >/dev/null 2>&1 || { log "containerd is not installed; nothing to configure"; exit 0; }
+
+WORK=$(mktemp)
+trap 'rm -f "$WORK"' EXIT
+
+containerd config default > "$WORK" || { log "ERROR: 'containerd config default' failed"; exit 1; }
+
+# --- 1. cgroup driver: Debian 13 uses cgroup v2, and kubelet agrees on systemd ----------
+sed -i -E 's|^[[:space:]]*SystemdCgroup[[:space:]]*=.*|  SystemdCgroup = true|' "$WORK"
+if ! grep -qE '^[[:space:]]*SystemdCgroup[[:space:]]*=[[:space:]]*true' "$WORK"; then
+    log "ERROR: could not set SystemdCgroup = true"
+    exit 1
+fi
+
+# --- 2. sandbox (pause) image ----------------------------------------------------------
+# kubeos-pause-image records the tag it ships; kubeadm's own list is the fallback. A mismatch
+# here means kubelet pulls a different sandbox than the one baked into the image, which on a
+# node without internet hangs at the first pod.
+PAUSE_IMAGE=""
+if [ -r "$PAUSE_IMAGE_FILE" ]; then
+    PAUSE_IMAGE=$(head -n 1 "$PAUSE_IMAGE_FILE" | tr -d '[:space:]')
+fi
+if [ -z "$PAUSE_IMAGE" ] && command -v kubeadm >/dev/null 2>&1; then
+    PAUSE_IMAGE=$(kubeadm config images list 2>/dev/null | grep '/pause:' | head -n 1 || true)
+fi
+if [ -z "$PAUSE_IMAGE" ]; then
+    log "WARNING: no pause image known; the sandbox stays at the containerd default"
+else
+    if grep -qE '^[[:space:]]*sandbox_image[[:space:]]*=' "$WORK"; then
+        sed -i -E "s|^[[:space:]]*sandbox_image[[:space:]]*=.*|  sandbox_image = \"${PAUSE_IMAGE}\"|" "$WORK"
+    elif grep -qE '^[[:space:]]*sandbox[[:space:]]*=' "$WORK"; then
+        sed -i -E "s|^[[:space:]]*sandbox[[:space:]]*=.*|    sandbox = \"${PAUSE_IMAGE}\"|" "$WORK"
+    elif grep -qE '^[[:space:]]*\[plugins\..*pinned_images[[:space:]]*\]' "$WORK"; then
+        sed -i -E "s|^([[:space:]]*\[plugins\..*pinned_images[[:space:]]*\])[[:space:]]*$|\1\n    sandbox = \"${PAUSE_IMAGE}\"|" "$WORK"
+    elif grep -qE "^[[:space:]]*\[plugins\..*cri\.v1\.images['\"]?[[:space:]]*\]" "$WORK"; then
+        sed -i -E "s|^([[:space:]]*\[plugins\..*cri\.v1\.images['\"]?[[:space:]]*\])[[:space:]]*$|\1\n    [plugins.'io.containerd.cri.v1.images'.pinned_images]\n    sandbox = \"${PAUSE_IMAGE}\"|" "$WORK"
+    else
+        printf "\n[plugins.'io.containerd.cri.v1.images'.pinned_images]\n    sandbox = \"%s\"\n" "$PAUSE_IMAGE" >> "$WORK"
+    fi
+    # Structure check: exactly one sandbox value and never a duplicated table, because a
+    # duplicate table makes containerd refuse to start.
+    VALUES=$(grep -cE '^[[:space:]]*(sandbox|sandbox_image)[[:space:]]*=' "$WORK" || true)
+    HEADERS=$(grep -cE '^[[:space:]]*\[plugins\..*pinned_images\]' "$WORK" || true)
+    if ! grep -qF "$PAUSE_IMAGE" "$WORK" || [ "$VALUES" -ne 1 ] || [ "$HEADERS" -gt 1 ]; then
+        log "ERROR: the sandbox patch did not apply cleanly (values=$VALUES headers=$HEADERS)"
+        exit 1
+    fi
+fi
+
+# --- write only when it actually differs -----------------------------------------------
+if [ "$FORCE" -eq 0 ] && [ -r "$CONF" ] && cmp -s "$WORK" "$CONF"; then
+    exit 0
+fi
+
+install -d -m 0755 "$(dirname "$CONF")"
+install -m 0644 "$WORK" "$CONF"
+log "wrote $CONF (containerd $(containerd --version 2>/dev/null | awk '{print $3}'), sandbox ${PAUSE_IMAGE:-default})"

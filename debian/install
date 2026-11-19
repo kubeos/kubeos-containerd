@@ -1,0 +1,2 @@
+payload/usr/lib/kubeos/kubeos-containerd-config          usr/lib/kubeos/
+payload/usr/lib/systemd/system/kubeos-containerd-config.service  usr/lib/systemd/system/

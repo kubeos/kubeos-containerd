@@ -1,0 +1,46 @@
+kubeos-containerd (0.1.0-5) trixie; urgency=medium
+
+  * postinst: the #DEBHELPER# marker has to come BEFORE this script's own `exit 0`, otherwise
+    debhelper's snippets sit behind an exit that never returns and nothing is enabled. Same
+    reason the unit kept reporting "disabled" after 0.1.0-4.
+
+ -- KubeOS <mail@kubeos.in>  Fri, 20 Nov 2026 04:40:00 +0530
+
+kubeos-containerd (0.1.0-4) trixie; urgency=medium
+
+  * postinst: add the #DEBHELPER# marker. dh_installdeb only inserts its systemd snippets
+    where that marker is, and it was missing - so nothing was ever enabled and the unit was
+    reported "disabled" while it still started from the shipped .wants link. (The same marker
+    is missing from the other packages' maintainer scripts; reported separately.)
+
+ -- KubeOS <mail@kubeos.in>  Fri, 20 Nov 2026 04:30:00 +0530
+
+kubeos-containerd (0.1.0-3) trixie; urgency=medium
+
+  * Let debhelper enable the unit instead of doing it in the postinst. Enabling from a postinst
+    does not create the /etc link here, so `systemctl is-enabled` kept answering "disabled" for a
+    unit that does run; dh_installsystemd runs deb-systemd-helper in the one context where it is
+    allowed to record the state.
+
+ -- KubeOS <mail@kubeos.in>  Fri, 20 Nov 2026 04:20:00 +0530
+
+kubeos-containerd (0.1.0-2) trixie; urgency=medium
+
+  * postinst: daemon-reload and enable the unit. The shipped .wants link already starts it at
+    boot, but without the reload systemd does not list it and `systemctl is-enabled` answers
+    "disabled" for a unit that runs - the exact confusion that made kubeos-coredns look
+    disabled while it was restart-looping on every worker.
+
+ -- KubeOS <mail@kubeos.in>  Fri, 20 Nov 2026 04:10:00 +0530
+
+kubeos-containerd (0.1.0-1) trixie; urgency=medium
+
+  * Initial packaging: own the containerd configuration instead of generating it in a build
+    hook (the last of the ISO's 90xx hooks that patched the installed system).
+  * The file is generated from `containerd config default` and patched for the systemd cgroup
+    driver and the release's sandbox image, because containerd.io's conffile disables the CRI
+    plugin and has no `imports` line - a drop-in cannot fix it.
+  * A boot unit runs before containerd and rewrites the file only when it differs, so an
+    upgrade of containerd.io can never leave a node that is no longer a Kubernetes node.
+
+ -- KubeOS <mail@kubeos.in>  Fri, 20 Nov 2026 04:00:00 +0530
